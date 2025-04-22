@@ -1,0 +1,171 @@
+//@version=6
+strategy("Mean Reversion MACD SPY Webhook", overlay=true,pyramiding = 1, default_qty_type=strategy.fixed,initial_capital = 600, default_qty_value=1, calc_on_every_tick=true)
+
+///-----------------------------alert message :{{strategy.order.alert_message}} 
+// Define extended hours trading times
+
+// set the variables
+// var bool initial_Setting = false
+// var float priceTrack = na
+double = input.string(title = "Sort", defval = "Stock", options = ["Option" ,"Stock"])
+put_option = input.bool(defval = false,title = "Put option", group = "Option Trading")
+qty_ = input.int(title="Stock_Quantity(contract)", defval=1, minval=1)
+
+premarket_start = timestamp("America/New_York", year, month, dayofmonth, 4, 30)  // 4:00 AM ET
+premarket_end = timestamp("America/New_York", year, month, dayofmonth, 9, 00)   // 9:30 AM ET
+startmarket = timestamp("America/New_York", year, month, dayofmonth, 10, 0)   // 9:30 AM ET
+
+postmarket_start = timestamp("America/New_York", year, month, dayofmonth, 16, 0) // 4:00 PM ET
+postmarket_end = timestamp("America/New_York", year, month, dayofmonth, 20, 0)   // 8:00 PM ET
+
+// Check if the current bar is in extended hours
+is_premarket = time >= premarket_start and time < premarket_end
+is_postmarket = time >= postmarket_start and time < postmarket_end
+is_regular_market = session.ismarket
+is_extended_hours = is_premarket or is_postmarket or (time>=startmarket and time < postmarket_end)
+validSymbols = array.from("SOLUSD","SPY","AMEX:SPY","BATS:SPY", "TSLA", "NVDA", "AMZN", "PLTR", "MSTR","AAPL")
+// log.info(str.tostring(is_premarket)+"\n" + str.tostring(premarket_start))
+// === INPUTS ===
+timeframe = input.timeframe(defval="", title="Timeframe (45S = chart timeframe)")
+smaPeriod = input.int(10, "SMA Period", minval=1)
+deviationThreshold = input.float(0.3, "Deviation Threshold (%)", step=0.1)
+initialStopLoss = input.float(0.3, "Initial Stop Loss (%)", step=0.01)
+trailPerc = input.float(0.25, "Trailing Stop Loss (%)", step=0.01)
+// log.info(str.tostring(syminfo.ticker))
+
+isValidSymbol = array.includes(validSymbols, str.tostring(syminfo.ticker))
+fastLength = input.int(12, title="MACD Fast Length")
+slowLength = input.int(26, title="MACD Slow Length")
+signalLength = input.int(9, title="MACD Signal Length")
+var float entryPrice = na
+
+// === CALCULATIONS ===
+smaValue = request.security(syminfo.tickerid, timeframe, ta.sma(close, smaPeriod))
+slowSMA = request.security(syminfo.tickerid, timeframe, ta.sma(high, 2))
+slowSMA_L = request.security(syminfo.tickerid, timeframe, ta.sma(low, 2))
+
+//=====supertrend logic =========================
+
+[supertrend, direction] = ta.supertrend(3, 10)
+plot(direction < 0 ? supertrend : na, "Up direction", color = color.green, style=plot.style_linebr)
+plot(direction > 0 ? supertrend : na, "Down direction", color = color.red, style=plot.style_linebr)
+lengthRSI = input(10, "lengthRSI")
+lengthStoch = input(10, "lengthStoch")
+src = input(close, title="RSI Source")
+smoothK = input(3,"smoothK")
+smoothD = input(3, "smoothD")
+
+rsi1 = ta.rsi(src, lengthRSI)
+k = ta.sma(ta.stoch(rsi1, rsi1, rsi1, lengthStoch), smoothK)
+d = ta.sma(k, smoothD)
+crossup = k[1] >= d[1] 
+crossdown = k[1] <= d[1] 
+
+
+upperThreshold = smaValue * (1 + deviationThreshold / 100) 
+lowerThreshold = smaValue * (1 - deviationThreshold / 100)
+[macd, signal, hist] = request.security(syminfo.tickerid, timeframe, ta.macd(close, fastLength, slowLength, signalLength))
+closePrice = request.security(syminfo.tickerid, timeframe, close)
+// === PLOTTING ===
+plot(smaValue, title="SMA", color=color.blue)
+// plot(slowSMA, title="SMAH", color=color.yellow)
+
+
+plot(upperThreshold, title="Upper Threshold", color=color.red)
+plot(lowerThreshold, title="Lower Threshold", color=color.green)
+var int count = 0
+var bool scam_Candle = false
+// === ENTRY CONDITIONS ===
+if math.abs(open-high[1]) > 10 and open > high[1] or math.abs(open-low[1]) > 10 and open < low[1]
+    count += 1
+    scam_Candle := true
+if count > 5
+    scam_Candle := false
+    count := 0
+
+longCondition = macd > signal and direction < 0 and crossup and barstate.isconfirmed
+shortCondition = macd < signal and direction > 0 and crossdown and barstate.isconfirmed
+
+// === SINGLE ENTRY ===
+var bool entered = false
+JSONMessage(signaltype,side_, sl_, price_, ticker_, price) =>
+     '{
+     "signaltype"       : "'+signaltype+'",\n
+     "side"             : "'+side_+'"   ,\n
+     "sl"               : "'+str.tostring(sl_)+'",\n
+     "qty"            : "'+str.tostring(price_)+'",\n
+     "symbol"           : "'+ticker_+'" ,\n
+     "price"            : "'+str.tostring(price)+'" \n
+     }'
+JSONMessage_options(signaltype,side_, price, ticker_, updated_date) =>
+     '{
+     "signaltype"       : "'+signaltype+'",\n
+     "side"             : "'+side_+'"   ,\n
+     "price"            : "'+str.tostring(price)+'",\n
+     "symbol"           : "'+ticker_+'" ,\n
+     "update_date"     : "'+updated_date+'" \n
+     }'
+var float stopPriceLong = na
+var float stopPriceShort = na
+updated_date = str.tostring(year) +"-0"+str.tostring(month)+"-"+str.tostring(dayofmonth)
+// Long Entry
+if longCondition and not entered and strategy.position_size == 0
+    stopPriceLong := closePrice * (1 - initialStopLoss / 100)
+    trailPointsLong = closePrice * (trailPerc / 100)
+    alertmessage = double== "Stock"? JSONMessage("entry","buy",stopPriceLong,qty_,syminfo.ticker,close):JSONMessage_options("entry","buy",math.round(close),syminfo.ticker,updated_date)
+    log.info(str.tostring(alertmessage))
+    strategy.entry("Long", strategy.long,qty = qty_,alert_message = alertmessage)
+    strategy.exit("Long_exit", "Long", trail_points=10, trail_offset=30)
+
+if shortCondition and not entered and strategy.position_size == 0
+    stopPriceShort := closePrice * (1 + initialStopLoss / 100)
+    trailPointsShort = closePrice * (trailPerc / 100)
+    alertmessage =  double== "Stock"? JSONMessage("entry","sell",stopPriceShort,-qty_,syminfo.ticker,close):JSONMessage_options("entry","sell",math.round(close),syminfo.ticker,updated_date)
+    if put_option
+        strategy.entry("short", strategy.short,qty = qty_, alert_message = alertmessage)
+    else
+        strategy.entry("short", strategy.short,qty = qty_)
+    strategy.exit("short_exit", "short", trail_points =10, trail_offset=30)
+
+// if strategy.position_size != 0
+    // entered := true
+    // log.info("--------------------------------")
+// Define the duration of a 5-minute candle in milliseconds
+
+if barstate.isnew
+    if ((strategy.position_size > 0 and close < stopPriceLong) or (strategy.position_size < 0 and close > stopPriceShort))
+        strategy.close_all("Stoploss",'{"signaltype":"exit"}')
+        log.info(str.tostring(stopPriceShort)+"----new candle----")
+
+
+if ((strategy.position_size > 0 and close < stopPriceLong) or (strategy.position_size < 0 and close > stopPriceShort*1.0002)) and double == "Option"
+    strategy.close_all("add Stoploss",'{"signaltype":"exit"}')
+if strategy.opentrades == 1 and not entered and double == "Stock"
+    // log.info("================")
+    entered := true
+    if strategy.position_size > 0 
+        alertmessage = JSONMessage("entry","buy",stopPriceLong,strategy.position_size,syminfo.ticker,close)
+        alert(alertmessage,alert.freq_once_per_bar)
+    else if strategy.position_size < 0
+        alertmessage = JSONMessage("entry","sell",stopPriceShort,strategy.position_size,syminfo.ticker,close)
+        alert(alertmessage,alert.freq_once_per_bar)
+
+
+
+// Reset Entry
+if entered
+    // log.info("-------")
+    if strategy.position_size == 0 
+        entered := false
+        alert('{"signaltype":"exit"}', alert.freq_once_per_bar)
+
+
+// if longCondition and not entered and strategy.position_size == 0 and double == "Option"
+//     strategy.entry("Long_option", strategy.long)
+//     strategy.exit("Long_exit_option", "Long_option")
+
+// if shortCondition and not entered and strategy.position_size == 0 and double == "Option"
+//     strategy.entry("short_option", strategy.short)
+//     strategy.exit("short_exit_option", "short_option")
+
+// Option Trading Exit logic
