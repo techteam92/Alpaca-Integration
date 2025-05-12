@@ -20,8 +20,8 @@ qty = 0
 # Access environment variables
 # APCA_API_KEY_ID = os.getenv('APCA_API_KEY_ID')
 # APCA_API_SECRET_KEY = os.getenv('APCA_API_SECRET_KEY')
-APCA_API_KEY_ID ="PK62H6FVJP5QY8ZC1NWC"
-APCA_API_SECRET_KEY = "D3geMn6G1A6Z8YiyfpJavXoTTvGejix5KQHg5Tad"
+APCA_API_KEY_ID ="PK9SUAB04Z4RBO7779IE"
+APCA_API_SECRET_KEY = "8KGiAzsFO0pay1xSLnQehNlmViqoiu0gr3iHru8j"
 baseURL = os.getenv('paper_url')
 list = []
 asset_id = ''
@@ -30,6 +30,8 @@ asset_id = ''
 def home():
     return '<h1>Welcome to the Flask Backend!</h1>'
 
+if __name__ == "__app1__":
+    app.run(port=5001)  # This will run the server on port 5001
 # Route to return JSON data
 @app.route('/api/data', methods=['GET'])
 def get_data():
@@ -44,7 +46,6 @@ def get_data():
 def submit_data():
     if request.is_json:
         content = request.get_json()
-        print("content===>", content)
         if content["signaltype"] == 'entry':
             data = {
                 "signaltype" : content["signaltype"],
@@ -60,7 +61,11 @@ def submit_data():
                 # list.append(data)
                     long_signal, short_signal, avoid_trading = option.Delta_Volatility(selected_symbol)
                     print("long_signal ==>", long_signal, "short_signal==>", short_signal, "avoid_trading==>", avoid_trading)
-                    order_create_response = alpaca_order_create(selected_symbol,entry_price, seleted_qty)
+
+                    if long_signal ==True or short_signal == True:
+                        order_create_response = alpaca_order_create(selected_symbol,entry_price, seleted_qty)
+                    else:
+                        print("we can't find the correct signal")
                     if not order_create_response:
                         return jsonify({"Error": "Failed in creaing order"})
                     thread = Thread(target=monitor_price, args=(content["symbol"], selected_symbol, seleted_qty, entry_price))
@@ -120,6 +125,7 @@ def option_info(symbol,update_data, price, side):
         }
         response = requests.get(url, headers=headers)
         response.raise_for_status()
+        print(response)
         data = response.json()
         ap_values = [
             (symbol, 
@@ -160,7 +166,7 @@ def alpaca_order_create(selected_symbol,price, seleted_qty):
         global stoploss
         stoploss = price - 0.5
         global takeprofit1
-        takeprofit1 = price + 0.2
+        takeprofit1 = price + 0.1
         global takeprofit2
         takeprofit2 = price + 0.2
         global takeprofit3
@@ -170,17 +176,15 @@ def alpaca_order_create(selected_symbol,price, seleted_qty):
         global qty
         global exit_signal
         account_data = alpaca_account_balance()
-        if url == "https://paper-api.alpaca.markets/v2/orders":
-            balance = 1000
-        else:
-            try:
-                account_dict = json.loads(account_data)
-                balance = float(account_dict['cash'])  # Convert to float 
-                print("current account balance=====>",balance)
-            except Exception as e:
-                print(f"Error fetching balance: {e}")
-                balance = 0  # Handle error appropriately
-        qty = round(balance/(price*100 *4))
+        # if url == "https://paper-api.alpaca.markets/v2/orders":
+        #     balance = 100000
+        # else:
+
+        account_dict = json.loads(account_data)
+        balance = float(account_dict['cash'])  # Convert to float 
+
+        qty = round(balance/(price*100))
+        print("qty==>", qty, " balance =" , balance)
         payload = {
             "type": "market",
             "time_in_force": "day",
@@ -241,7 +245,7 @@ def monitor_price(symbol, option_symbol, quantity, entry_price):
                 #     stoploss = option_price - 0.1
                 #     trail_price = option_price
                 # Check stop loss condition
-                if stoploss is not None and option_price < stoploss or exit_signal:
+                if exit_signal:
                     print("😲Stop loss triggered. Closing all positions.😢")
                     # alpaca_order_create(content["side"],selected_symbol,selected_ap, seleted_qty)
                     opposite_side = "sell" if ask_type =="buy" else "buy"
@@ -251,15 +255,15 @@ def monitor_price(symbol, option_symbol, quantity, entry_price):
                     exit_signal = False
                     qty = 0
                     break
-                if (takeprofit1 is not None and option_price > takeprofit1):
-                    print("😇takeprofit triggered. Closing all positions.🤗")
-                    # opposite_side = "sell" if ask_type =="buy" else "buy"
-                    # print(f"position devision1: {position_division1}, current quantity: {current_quantity}")
-                    # alpaca_position_closeAll(option_symbol,position_division1,opposite_side)
-                    takeprofit1 = option_price + 0.2
-                    stoploss = option_price - 0.2
-                    # print("alpaca position closeAll for takeprofit1 completed")
-                    print("💪Stop loss is updated!💪")
+                # if (takeprofit1 is not None and option_price > takeprofit1):
+                #     print("😇takeprofit triggered. Closing all positions.🤗")
+                #     # opposite_side = "sell" if ask_type =="buy" else "buy"
+                #     # print(f"position devision1: {position_division1}, current quantity: {current_quantity}")
+                #     # alpaca_position_closeAll(option_symbol,position_division1,opposite_side)
+                #     takeprofit1 = option_price + 0.1
+                #     stoploss = option_price - 0.2
+                #     # print("alpaca position closeAll for takeprofit1 completed")
+                #     print("💪Stop loss is updated!💪")
                     # qty = quantity * 0.75
                     # current_quantity = current_quantity - position_division1
                     # stoploss = entry_price
@@ -336,7 +340,7 @@ def get_option_price(symbol, option_symbol):
         if 'snapshots' in data and option_symbol in data['snapshots']:
             latest_quote = data['snapshots'][option_symbol].get('latestQuote')
             if latest_quote:
-                ask_price = latest_quote.get('bp') if ask_type =="call" else latest_quote.get('bp')
+                ask_price = latest_quote.get('ap') if ask_type =="call" else latest_quote.get('bp')
                 if ask_price is not None:
                     print(f"current option Price 🌟: {ask_price}")
                     return ask_price
